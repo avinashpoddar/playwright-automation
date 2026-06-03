@@ -2,452 +2,348 @@
 
 **Project:** `playwright-automation`  
 **Stack:** Playwright Test, TypeScript, dotenv  
-**Scope:** Web (UI) and API test automation with shared fixtures, environment control, and pluggable test data.
+**Scope:** Web (UI) and API tests in one repo, with stage/prod config and CSV-based login data (default).
 
 ---
 
 ## 1. Purpose
 
-This framework provides a single repository to:
-
-- Run **web (E2E) tests** against a configurable UI base URL (browser + page objects + flows).
-- Run **API tests** against a configurable API base URL (HTTP client + endpoints + services).
-- Switch **stage vs production** without code changes.
-- Load test data from **CSV, JSON, Excel, SQL, or environment variables**.
-- Support **highlighted UI actions** for demos and debugging.
-
-Both test types can be triggered independently or together via Playwright projects, npm scripts, CLI flags, and the Playwright UI.
+| Capability | How |
+|------------|-----|
+| Run **web tests** | Browser + `tests/ui/*.spec.ts` + `uiFixture` |
+| Run **API tests** | HTTP client + `tests/api/*.spec.ts` + `apiFixture` |
+| **Stage vs prod** | `PROD=1` loads `.env.prod`, else `.env.stage` |
+| **Test data** | Default: `test-data/stage/ui/login.csv` or `test-data/prod/ui/login.csv` |
+| **Demo-friendly UI** | Optional red/yellow flash before clicks (`HIGHLIGHT_ACTIONS`) |
 
 ---
 
-## 2. High-Level Architecture
+## 2. How to run tests (execution flow)
+
+This diagram answers: *“What do I run, and what gets loaded?”*
 
 ```mermaid
 flowchart TB
-  subgraph trigger ["Test execution"]
-    CLI["npx playwright test"]
-    NPM["npm scripts"]
-    PWUI["Playwright Test UI"]
-    CI["CI pipeline"]
+  START(["You run a command"])
+
+  subgraph commands ["Commands"]
+    ALL["npm test — all specs, stage env"]
+    UI["npm run test:ui — web only"]
+    API["npm run test:api — API only"]
+    PROD["npm run test:prod — prod env file"]
   end
 
-  subgraph config ["Configuration"]
-    PWCFG["playwright.config.ts"]
-    LOADENV["load-env.ts"]
-    ENVSTAGE["env.stage file"]
-    ENVPROD["env.prod file"]
+  subgraph config_load ["Config loads first"]
+    PW["playwright.config.ts"]
+    ENVLOAD["load-env.ts picks env file"]
+    STAGE[".env.stage — UAT URLs and secrets"]
+    PRODFILE[".env.prod — production URLs"]
   end
 
-  subgraph fixtures ["Fixture layers"]
-    PWBASE["Playwright test base"]
-    COMMON["commonFixture"]
-    UIFIX["uiFixture"]
-    APIFIX["apiFixture"]
+  subgraph projects ["Playwright picks tests by project"]
+    CHROM["chromium — all tests under tests/"]
+    UIPROJ["ui — only tests/ui/"]
+    APIPROJ["api — only tests/api/"]
   end
 
-  subgraph ui_layer ["Web automation"]
-    INIT["initUIApp"]
-    PAGES["Page objects"]
-    FLOWS["Flows"]
-    ACTIONS["HighlightedActions"]
-  end
+  START --> commands
+  ALL --> PW
+  UI --> PW
+  API --> PW
+  PROD --> PW
+  PW --> ENVLOAD
+  ENVLOAD -->|"PROD not set"| STAGE
+  ENVLOAD -->|"PROD=1"| PRODFILE
+  PW --> CHROM
+  PW --> UIPROJ
+  PW --> APIPROJ
+```
 
-  subgraph api_layer ["API automation"]
-    CTX["APIRequestContext"]
-    CLIENT["ApiClient"]
-    SVC["Services"]
-    APIEP["Endpoints"]
-  end
+| Project | Runs | Browser `baseURL` |
+|---------|------|-------------------|
+| `chromium` | `tests/ui/**` + `tests/api/**` | `UI_BASE_URL` (for web) |
+| `ui` | `tests/ui/**` only | `UI_BASE_URL` |
+| `api` | `tests/api/**` only | API uses `API_BASE_URL` in fixture, not page |
 
-  subgraph data_layer ["Test data"]
-    DATACSV["CSV"]
-    DATAJSON["JSON"]
-    DATAMYSQL["MySQL"]
-    DATAXLS["Excel"]
-    DATAENV["env vars"]
-  end
+---
 
-  CLI --> PWCFG
-  NPM --> PWCFG
-  PWUI --> PWCFG
-  CI --> PWCFG
-  PWCFG --> LOADENV
-  LOADENV --> ENVSTAGE
-  LOADENV --> ENVPROD
-  PWCFG --> COMMON
-  PWBASE --> COMMON
-  COMMON --> UIFIX
-  COMMON --> APIFIX
-  COMMON --> DATACSV
-  UIFIX --> INIT --> PAGES --> FLOWS --> ACTIONS
-  APIFIX --> CTX --> CLIENT --> SVC --> APIEP
+## 3. What happens inside a test (runtime flow)
+
+### 3.1 Web test (example: `tests/ui/login.spec.ts`)
+
+```mermaid
+sequenceDiagram
+  participant Spec as login.spec.ts
+  participant UIFix as uiFixture
+  participant Common as commonFixture
+  participant App as initUIApp
+  participant Flow as LoginFlow
+  participant Page as LoginPage
+  participant Browser as Chromium page
+
+  Spec->>UIFix: import test, expect
+  UIFix->>Common: extends commonTest
+  Common-->>Spec: testData, environment, uiBaseUrl
+  UIFix-->>Spec: page, adminApp
+  Spec->>Flow: adminApp.login.loginAs(user, pass)
+  Flow->>Page: loginAs(user, pass)
+  Page->>Browser: actions.fill / click (optional highlight)
+  Browser-->>Spec: navigates to /admin
+  Spec->>Spec: expect(page).toHaveURL(...)
+```
+
+### 3.2 API test (example: `tests/api/pet.spec.ts`)
+
+```mermaid
+sequenceDiagram
+  participant Spec as pet.spec.ts
+  participant APIFix as apiFixture
+  participant Common as commonFixture
+  participant Factory as ApiFactory
+  participant Svc as PetService
+  participant Client as ApiClient
+  participant HTTP as APIRequestContext
+
+  Spec->>APIFix: import test, expect
+  APIFix->>Common: extends commonTest
+  Common-->>Spec: apiBaseUrl from env
+  APIFix->>HTTP: newContext(baseURL = API_BASE_URL)
+  APIFix-->>Spec: apiFactory
+  Spec->>Svc: apiFactory.petService.addPet(pet)
+  Svc->>Client: processRequest(AddPetEndpoint)
+  Client->>HTTP: POST pet relative path
+  HTTP-->>Spec: ApiResponse JSON body
 ```
 
 ---
 
-## 3. Repository Structure
+## 4. Fixture chain (shared → UI or API)
 
+```mermaid
+flowchart TB
+  subgraph layer0 ["Layer 0 — Playwright built-in"]
+    PWTEST["@playwright/test"]
+  end
+
+  subgraph layer1 ["Layer 1 — commonFixture.ts (worker scope)"]
+    ENVNAME["environment: stage or prod"]
+    UIBASE["uiBaseUrl"]
+    APIBASE["apiBaseUrl"]
+    TESTDATA["testData from TestDataLoader"]
+  end
+
+  subgraph layer2ui ["Layer 2a — uiFixture.ts (per test)"]
+    PAGE["page — browser tab"]
+    ADMINAPP["adminApp — initUIApp(page)"]
+  end
+
+  subgraph layer2api ["Layer 2b — apiFixture.ts (per test)"]
+    APIFACTORY["apiFactory — PetService + ApiClient"]
+  end
+
+  PWTEST --> layer1
+  layer1 --> layer2ui
+  layer1 --> layer2api
 ```
-playwright-automation/
-├── docs/
-│   └── FRAMEWORK_DESIGN.md          # This document
-├── playwright.config.ts           # Projects, reporters, env bootstrap
-├── .env.stage                       # Stage / UAT variables
-├── .env.prod                        # Production variables
-├── .env.example                     # Template (no secrets)
-├── package.json                     # npm scripts for UI / API / env
-├── test-data/
-│   ├── stage/ui/login.csv           # Stage UI credentials
-│   ├── prod/ui/login.csv            # Prod UI credentials
-│   └── sql/login-credentials.sql    # SQL-backed data (optional)
-├── tests/
-│   ├── ui/                          # Web specs → uiFixture
-│   │   └── login.spec.ts
-│   └── api/                         # API specs → apiFixture
-│       └── pet.spec.ts
-└── src/
-    ├── config/
-    │   ├── load-env.ts              # PROD=1 → .env.prod else .env.stage
-    │   └── env.ts                   # Typed env object (single source)
-    ├── commons/
-    │   ├── env/EnvUtils.ts          # stage | prod helpers
-    │   ├── data/                    # Test data providers + loader
-    │   └── playwright/              # Highlight, wait, screenshot helpers
-    ├── fixtures/
-    │   ├── commonFixture.ts         # Shared worker fixtures
-    │   ├── uiFixture.ts             # adminApp
-    │   └── apiFixture.ts            # apiFactory
-    ├── ui/
-    │   ├── pages/                   # Page objects (BasePage)
-    │   ├── flows/                   # Multi-step workflows
-    │   ├── factory/                 # initUIApp, initPages
-    │   └── interfaces/              # UIApp contract
-    └── api/
-        ├── config/api-paths.ts      # Relative API paths
-        ├── client/                  # ApiClient, ApiFactory
-        ├── endpoints/               # IHttpRequest implementations
-        ├── services/                # Domain services (e.g. PetService)
-        ├── builders/                # Test entity builders
-        └── models/                  # DTOs / interfaces
-```
+
+| Spec type | Import from | Extra fixtures |
+|-----------|-------------|----------------|
+| Web | `src/fixtures/uiFixture.ts` | `page`, `adminApp` |
+| API | `src/fixtures/apiFixture.ts` | `apiFactory` |
+| Both | (via above) | `testData`, `environment`, `uiBaseUrl`, `apiBaseUrl` |
 
 ---
 
-## 4. Playwright Projects (How Web & API Are Triggered)
+## 5. Test data flow (default: CSV)
 
-Playwright **projects** control which specs run and with which defaults.
-
-| Project    | `testMatch`        | Browser / `baseURL`                         | Use case                          |
-|-----------|--------------------|---------------------------------------------|-----------------------------------|
-| `chromium`| `tests/**`         | Desktop Chrome + `UI_BASE_URL`              | Default; Playwright UI, full suite |
-| `ui`      | `tests/ui/**`      | Desktop Chrome + `UI_BASE_URL`              | Web tests only                    |
-| `api`     | `tests/api/**`     | Desktop Chrome (no UI `baseURL` on `page`)  | API tests only                    |
-
-**Important:** API tests do not use `page.goto`. They use a dedicated `APIRequestContext` created in `apiFixture` with `API_BASE_URL` as `baseURL`. UI tests use Playwright `page` with `UI_BASE_URL` from the project config.
-
-### 4.1 Execution matrix
-
-| Goal              | Command |
-|-------------------|---------|
-| All tests (stage) | `npm test` or `npx playwright test` |
-| Web only          | `npm run test:ui` |
-| API only          | `npm run test:api` |
-| Stage (explicit)  | `npm run test:stage` |
-| Production        | `npm run test:prod` |
-| Single UI file    | `npx playwright test tests/ui/login.spec.ts --project=ui` |
-| Single API file   | `npx playwright test tests/api/pet.spec.ts --project=api` |
-| Playwright UI     | `npx playwright test --ui` (select project: `chromium`, `ui`, or `api`) |
-| Headed UI demo    | `HIGHLIGHT_ACTIONS=true npx playwright test tests/ui --project=ui --headed` |
-
-### 4.2 CI recommendation
-
-```yaml
-# Example Jenkins / GitHub Actions pattern
-- name: UI tests (stage)
-  run: npm run test:ui:stage
-  env:
-    CI: '1'
-
-- name: API tests (stage)
-  run: npm run test:api
-  env:
-    CI: '1'
-
-- name: Prod smoke (scheduled)
-  run: npm run test:prod -- --project=ui
-  env:
-    CI: '1'
-    PROD: '1'
-```
-
-Run UI and API in **parallel jobs** for faster feedback. Use `CI=1` for headless mode and retries (see `playwright.config.ts`).
-
----
-
-## 5. Environment Management (Stage / Prod)
-
-Modeled after enterprise patterns (e.g. Allen web automation): one flag selects the env file.
-
-| `PROD` value | File loaded   | `env.name` |
-|--------------|---------------|------------|
-| not set / `0`| `.env.stage`  | `stage`    |
-| `1`          | `.env.prod`   | `prod`     |
-
-**Bootstrap order:**
-
-1. `playwright.config.ts` calls `loadEnv()`.
-2. `src/config/env.ts` calls `loadEnv()` again (idempotent) when imported by tests/framework code.
-3. `env` object exposes `uiBaseUrl`, `apiBaseUrl`, `highlightActions`, etc.
-
-**Required variables:**
-
-| Variable            | Used by        | Description                    |
-|---------------------|----------------|--------------------------------|
-| `UI_BASE_URL`       | UI projects    | Admin / app under test         |
-| `API_BASE_URL`      | API fixture    | REST API root (trailing `/` OK)|
-| `UI_TEST_DATA_SOURCE` | TestDataLoader | `csv` \| `json` \| `sql` \| `excel` \| `env` |
-| `HIGHLIGHT_ACTIONS` | UI actions     | `true` = flash before click/fill |
-| `ADMIN_*`           | Login data     | Fallback when using `env` source |
-
-**Prod-only specs:** Name files `*.prod.spec.ts`. They are **ignored on stage** via `testIgnore` in config.
-
----
-
-## 6. Fixture Design
+Used today by `tests/ui/login.spec.ts` when `UI_TEST_DATA_SOURCE=csv` (default in `.env.stage`).
 
 ```mermaid
 flowchart LR
-  PWBASE["Playwright test"]
-  COMMON["commonTest"]
-  UIFIXT["uiFixture"]
-  APIFIXT["apiFixture"]
+  ENVVAR["UI_TEST_DATA_SOURCE=csv"]
+  CSVFILE["test-data/stage/ui/login.csv<br/>or prod folder"]
+  RESOLVE["resolve-test-data-path.ts"]
+  CSVPROV["CsvDataProvider.ts"]
+  LOADER["TestDataLoader.ts"]
+  FIXTURE["testData fixture"]
+  SPEC["login.spec.ts uses testData.login"]
 
-  PWBASE --> COMMON
-  COMMON --> UIFIXT
-  COMMON --> APIFIXT
-
-  COMMON --> TD["testData worker"]
-  COMMON --> ENVFIX["environment worker"]
-  COMMON --> UIB["uiBaseUrl worker"]
-  COMMON --> APIB["apiBaseUrl worker"]
-
-  UIFIXT --> PAGE["page"]
-  UIFIXT --> APP["adminApp"]
-
-  APIFIXT --> AF["apiFactory"]
+  ENVVAR --> LOADER
+  CSVFILE --> RESOLVE --> CSVPROV --> LOADER --> FIXTURE --> SPEC
 ```
 
-### 6.1 Common fixtures (worker scope)
+**CSV columns:** `scenario`, `username`, `password`, `expectedUrlPattern`
 
-| Fixture       | Type        | Description                                      |
-|---------------|-------------|--------------------------------------------------|
-| `environment` | `stage` \| `prod` | Active environment name                    |
-| `uiBaseUrl`   | `string`    | From `env.uiBaseUrl`                             |
-| `apiBaseUrl`  | `string`    | From `env.apiBaseUrl`                            |
-| `testData`    | `UITestData`| Login scenarios from configured data source      |
-
-### 6.2 UI fixture (test scope)
-
-| Fixture    | Type     | Description                                      |
-|------------|----------|--------------------------------------------------|
-| `page`     | `Page`   | Playwright browser page                            |
-| `adminApp` | `UIApp`  | `{ pages, login }` from `initUIApp(page)`         |
-
-**Spec import:**
-
-```typescript
-import { test, expect } from '../../src/fixtures/uiFixture';
-```
-
-### 6.3 API fixture (test scope)
-
-| Fixture      | Type         | Description                                |
-|--------------|--------------|--------------------------------------------|
-| `apiFactory` | `ApiFactory` | Services wired to isolated request context |
-
-**Spec import:**
-
-```typescript
-import { test, expect } from '../../src/fixtures/apiFixture';
-```
-
-Each test gets a fresh `APIRequestContext` disposed after the test.
+**Other sources (code exists, not used by current specs):** set `UI_TEST_DATA_SOURCE` to `json`, `sql`, `excel`, or `env` — see `TestDataLoader.ts` and providers under `src/commons/data/providers/`.
 
 ---
 
-## 7. Web Automation Layer
+## 6. Repository structure (files in use)
 
-### 7.1 Patterns
-
-| Pattern        | Implementation                          | Role                                      |
-|----------------|-----------------------------------------|-------------------------------------------|
-| Page Object    | `LoginPage extends BasePage`            | Locators + page-level actions             |
-| Flow           | `LoginFlow`                             | Multi-step business sequence              |
-| App factory    | `initUIApp(page)`                       | Registry of pages + flows (Allen: initWebPOMs) |
-| Highlighted actions | `HighlightedActions` in `BasePage` | Optional visual flash before interactions |
-
-### 7.2 UI test flow (example)
+Only paths that exist and participate in the current test runs:
 
 ```
-login.spec.ts
-  → uiFixture (adminApp, testData, page)
-    → LoginFlow.loginAs(user, pass)
-      → LoginPage.loginAs
-        → actions.fill / actions.click (with optional highlight)
-          → page navigates to admin dashboard
-            → expect(page).toHaveURL(...)
+playwright-automation/
+├── docs/FRAMEWORK_DESIGN.md
+├── playwright.config.ts
+├── package.json
+├── tsconfig.json
+├── .env.stage                # local stage (gitignored)
+├── .env.prod                 # local prod (gitignored)
+├── test-data/
+│   ├── stage/ui/login.csv    # used by UI login test (stage)
+│   ├── prod/ui/login.csv     # used by UI login test (prod)
+│   └── sql/login-credentials.sql  # only if UI_TEST_DATA_SOURCE=sql
+├── tests/
+│   ├── ui/login.spec.ts      # web — uiFixture
+│   └── api/pet.spec.ts       # API — apiFixture
+└── src/
+    ├── config/
+    │   ├── load-env.ts
+    │   └── env.ts
+    ├── commons/
+    │   ├── env/EnvUtils.ts
+    │   ├── data/
+    │   │   ├── TestDataLoader.ts
+    │   │   ├── resolve-test-data-path.ts
+    │   │   ├── DataSourceType.ts
+    │   │   ├── contracts/IDataProvider.ts
+    │   │   └── providers/
+    │   │       ├── CsvDataProvider.ts      # default
+    │   │       ├── EnvDataProvider.ts      # fallback
+    │   │       ├── JsonDataProvider.ts     # optional via env
+    │   │       ├── ExcelDataProvider.ts    # optional via env
+    │   │       └── SqlDataProvider.ts      # optional via env
+    │   └── playwright/
+    │       ├── highlight.ts
+    │       ├── HighlightedActions.ts       # used by BasePage
+    │       ├── wait-helper.ts              # used by BasePage
+    │       ├── locator-helper.ts           # exported, not used yet
+    │       ├── screenshot-helper.ts        # exported, not used yet
+    │       └── date-helper.ts              # exported, not used yet
+    ├── data/models/
+    │   ├── LoginCredentials.ts
+    │   └── UITestData.ts
+    ├── fixtures/
+    │   ├── commonFixture.ts
+    │   ├── uiFixture.ts
+    │   └── apiFixture.ts
+    ├── ui/
+    │   ├── pages/BasePage.ts
+    │   ├── pages/LoginPage.ts
+    │   ├── flows/LoginFlow.ts
+    │   ├── factory/init-pages.ts
+    │   ├── factory/init-ui-app.ts
+    │   └── interfaces/UIApp.ts
+    └── api/
+        ├── config/api-paths.ts
+        ├── client/ApiClient.ts
+        ├── client/ApiFactory.ts
+        ├── contracts/IHttpRequest.ts
+        ├── contracts/HttpMethod.ts
+        ├── endpoints/pet/AddPetEndpoint.ts   # used by PetService
+        ├── services/PetService.ts
+        ├── builders/PetBuilder.ts
+        ├── enums/PetStatus.ts
+        ├── models/Pet.ts
+        ├── models/Category.ts              # optional on Pet type only
+        ├── models/Tag.ts                     # optional on Pet type only
+        └── response/
+            ├── ApiResponse.ts
+            └── BaseResponse.ts
 ```
 
-### 7.3 Adding a new UI feature
+### Not in active use (omitted from diagrams above)
 
-1. Create `src/ui/pages/MyPage.ts` extending `BasePage`.
-2. Register in `src/ui/factory/init-pages.ts`.
-3. Add flow in `src/ui/flows/` if multi-page logic is needed.
-4. Wire in `src/ui/factory/init-ui-app.ts` and `src/ui/interfaces/UIApp.ts`.
-5. Add `tests/ui/my-feature.spec.ts` using `uiFixture`.
-6. Add rows to `test-data/stage/ui/...` and `test-data/prod/ui/...`.
-
----
-
-## 8. API Automation Layer
-
-### 8.1 Request pipeline
-
-```
-pet.spec.ts
-  → apiFactory.petService.addPet(pet)
-    → PetService
-      → ApiClient.processRequest(AddPetEndpoint)
-        → APIRequestContext.post('pet', ...)   // relative to API_BASE_URL
-          → ApiResponse<Pet>
-```
-
-### 8.2 Layer responsibilities
-
-| Layer      | Responsibility                                      |
-|------------|-----------------------------------------------------|
-| Endpoint   | HTTP method, path (`api-paths.ts`), headers, body   |
-| Service    | Domain operation (e.g. `addPet`)                    |
-| ApiClient  | Execute request, parse JSON, error on non-JSON    |
-| ApiFactory | Group services for fixture injection              |
-| Builder    | Generate test payloads (e.g. `PetBuilder`)        |
-
-### 8.3 Adding a new API test
-
-1. Add path constant in `src/api/config/api-paths.ts`.
-2. Create endpoint class implementing `IHttpRequest`.
-3. Add method on service + register on `ApiFactory` if new domain.
-4. Create `tests/api/my-api.spec.ts` using `apiFixture`.
+| File | Reason |
+|------|--------|
+| `GetPetByStatusEndpoint.ts` | Defined but not called from `PetService` (scaffold for future GET tests) |
+| `commons/playwright/locator-helper.ts` | Re-exported only; no spec/page imports |
+| `commons/playwright/screenshot-helper.ts` | Same |
+| `commons/playwright/date-helper.ts` | Same |
+| `allure-playwright`, `zod` in package.json | Installed; not wired in `playwright.config.ts` |
 
 ---
 
-## 9. Test Data Management
+## 7. Environment variables
 
-```mermaid
-flowchart TD
-  SRC["UI_TEST_DATA_SOURCE"]
-  SRC --> PCSV["CsvDataProvider"]
-  SRC --> PJSON["JsonDataProvider"]
-  SRC --> PMYSQL["SqlDataProvider"]
-  SRC --> PXLS["ExcelDataProvider"]
-  SRC --> PENV["EnvDataProvider"]
-
-  RESOLVE["resolveTestDataPath"]
-  RESOLVE --> TSTAGE["test-data stage folder"]
-  RESOLVE --> TPROD["test-data prod folder"]
-  RESOLVE --> TFALL["test-data shared folder"]
-
-  PCSV --> LOADER["TestDataLoader"]
-  PJSON --> LOADER
-  PMYSQL --> LOADER
-  PXLS --> LOADER
-  PENV --> LOADER
-  LOADER --> FIX["testData fixture"]
-```
-
-**Resolution rule:** Prefer `test-data/{stage|prod}/<path>`, else `test-data/<path>`.
-
-**UI login CSV columns:** `scenario`, `username`, `password`, `expectedUrlPattern`
+| Variable | Required | Used by |
+|----------|----------|---------|
+| `UI_BASE_URL` | Yes | UI projects (`page.goto` base) |
+| `API_BASE_URL` | Yes | `apiFixture` request context |
+| `UI_TEST_DATA_SOURCE` | No (default `csv`) | `TestDataLoader` |
+| `HIGHLIGHT_ACTIONS` | No | `HighlightedActions` |
+| `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `ADMIN_EXPECTED_URL` | For `env` data source / fallback | `EnvDataProvider` |
+| `PROD` | No | `load-env.ts` → `.env.prod` when `1` |
+| `DB_*` | Only if `UI_TEST_DATA_SOURCE=sql` | `SqlDataProvider` |
 
 ---
 
-## 10. Cross-Cutting Concerns
+## 8. Commands quick reference
 
-| Concern      | Implementation                                      |
-|--------------|-----------------------------------------------------|
-| Logging      | Playwright HTML reporter; optional trace on retry     |
-| Screenshots  | `only-on-failure` (config); `captureFullPage` helper  |
-| Retries      | 2 on CI, 0 locally                                  |
-| Parallelism  | `fullyParallel: true`                               |
-| Secrets      | `.env.stage` / `.env.prod` (do not commit passwords)|
-| Allure       | Dependency present; wire reporter when needed       |
-
----
-
-## 11. Dependencies
-
-| Package            | Purpose                          |
-|--------------------|----------------------------------|
-| `@playwright/test` | Runner, browser, API request     |
-| `dotenv`           | Env file loading                 |
-| `@faker-js/faker`  | Dynamic API test data (v9, CJS)  |
-| `mysql2`           | SQL test data provider           |
-| `xlsx`             | Excel test data provider         |
-| `cross-env`        | `PROD=1` on Windows scripts      |
-| `zod`              | Reserved for schema validation   |
-| `allure-playwright`| Optional reporting               |
-
----
-
-## 12. Design Decisions
-
-| Decision | Rationale |
-|----------|-----------|
-| Separate `ui` and `api` projects | Run web/API independently in CI; faster API feedback |
-| Keep `chromium` project for all tests | Playwright UI defaults to `chromium` project name |
-| `commonFixture` base layer | Shared `testData` and URLs (Allen-style common fixtures) |
-| Relative API paths + request `baseURL` | Avoid hard-coded full URLs in endpoints |
-| `initUIApp` vs class factory | Avoid ESM/CJS constructor issues; matches Allen `initWebPOMs` |
-| Env-specific test-data folders | Stage/prod credentials isolation |
-| `HIGHLIGHT_ACTIONS` toggle | Fast CI, visible local demos |
-
----
-
-## 13. Future Enhancements (Out of Scope Today)
-
-- Global setup / teardown (secrets manager, DB pool like Allen `load-test-data.ts`)
-- YAML-driven API tests (Allen `yaml-test-runner`)
-- Allure reporter in `playwright.config.ts`
-- Zod validation on CSV/JSON rows
-- Dedicated `api` project without browser launch (Playwright still spins worker; acceptable)
-- Tag-based execution (`@smoke`, `@regression`)
-
----
-
-## 14. Quick Reference Card
-
-```
-# Environment
-PROD=1                    → production config
-UI_TEST_DATA_SOURCE=csv   → data provider
-
-# Trigger web
-npm run test:ui
-npx playwright test tests/ui --project=ui
-
-# Trigger API
-npm run test:api
-npx playwright test tests/api --project=api
-
-# Trigger both (stage)
+```bash
+# Stage — all tests
 npm test
 
-# Debug UI with highlights
-HIGHLIGHT_ACTIONS=true npx playwright test tests/ui --headed --project=ui
+# Web only
+npm run test:ui
+
+# API only
+npm run test:api
+
+# Production env file
+npm run test:prod
+
+# Playwright UI mode
+npx playwright test --ui
+
+# Single file
+npx playwright test tests/api/pet.spec.ts --project=api
+npx playwright test tests/ui/login.spec.ts --project=ui
 ```
 
 ---
 
-**Document version:** 1.1  
-**Last aligned with codebase:** March 2026  
-**Note:** Mermaid diagrams use GitHub-safe node IDs (no `@`, `/`, or duplicate IDs).
+## 9. Adding new coverage
+
+### Web
+
+1. `src/ui/pages/MyPage.ts` → extend `BasePage`
+2. Register in `init-pages.ts` → wire `init-ui-app.ts` + `UIApp.ts`
+3. Add `LoginFlow`-style flow if needed
+4. `tests/ui/my-feature.spec.ts` → import `uiFixture`
+5. Rows in `test-data/stage/ui/` and `test-data/prod/ui/`
+
+### API
+
+1. Path in `api-paths.ts`
+2. Endpoint class + method on service + `ApiFactory` if new domain
+3. `tests/api/my-api.spec.ts` → import `apiFixture`
+
+---
+
+## 10. CI example
+
+```yaml
+- name: UI tests (stage)
+  run: npm run test:ui
+  env: { CI: "1" }
+
+- name: API tests (stage)
+  run: npm run test:api
+  env: { CI: "1" }
+```
+
+---
+
+## 11. Future enhancements
+
+- Wire `GetPetByStatusEndpoint` into `PetService`
+- `*.prod.spec.ts` for prod-only smoke (ignored on stage via `testIgnore`)
+- Allure reporter, Zod validation on CSV rows
+- YAML API runner, global setup / secrets manager
+
+---
+
+**Document version:** 2.0  
+**Aligned with repo:** March 2026 — diagrams list only files used in current `login.spec.ts` and `pet.spec.ts` runs.
