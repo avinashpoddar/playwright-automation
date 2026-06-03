@@ -1,0 +1,31 @@
+{
+  "name": "playwright-automation",
+  "version": "1.0.0",
+  "main": "index.js",
+  "scripts": {
+    "test": "playwright test",
+    "test:stage": "playwright test",
+    "test:prod": "cross-env PROD=1 playwright test",
+    "test:ui": "playwright test --project=ui",
+    "test:ui:stage": "playwright test --project=ui",
+    "test:ui:prod": "cross-env PROD=1 playwright test --project=ui",
+    "test:api": "playwright test --project=api"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "devDependencies": {
+    "@playwright/test": "^1.60.0",
+    "@types/node": "^25.9.1",
+    "allure-playwright": "^3.9.0",
+    "cross-env": "^7.0.3"
+  },
+  "dependencies": {
+    "@faker-js/faker": "^9.9.0",
+    "dotenv": "^17.4.2",
+    "mysql2": "^3.14.0",
+    "xlsx": "^0.18.5",
+    "zod": "^4.4.3"
+  }
+}
