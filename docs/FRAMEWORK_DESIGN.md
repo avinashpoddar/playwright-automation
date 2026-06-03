@@ -24,62 +24,63 @@ Both test types can be triggered independently or together via Playwright projec
 
 ```mermaid
 flowchart TB
-  subgraph trigger [Test execution]
-    CLI[npx playwright test]
-    NPM[npm scripts]
-    UI[Playwright Test UI]
-    CI[CI pipeline]
+  subgraph trigger ["Test execution"]
+    CLI["npx playwright test"]
+    NPM["npm scripts"]
+    PWUI["Playwright Test UI"]
+    CI["CI pipeline"]
   end
 
-  subgraph config [Configuration]
-    PW[playwright.config.ts]
-    LE[load-env.ts]
-    ES[.env.stage]
-    EP[.env.prod]
+  subgraph config ["Configuration"]
+    PWCFG["playwright.config.ts"]
+    LOADENV["load-env.ts"]
+    ENVSTAGE["env.stage file"]
+    ENVPROD["env.prod file"]
   end
 
-  subgraph fixtures [Fixture layers]
-    BASE[@playwright/test]
-    COMMON[commonFixture]
-    UIFIX[uiFixture]
-    APIFIX[apiFixture]
+  subgraph fixtures ["Fixture layers"]
+    PWBASE["Playwright test base"]
+    COMMON["commonFixture"]
+    UIFIX["uiFixture"]
+    APIFIX["apiFixture"]
   end
 
-  subgraph ui [Web automation]
-    INIT[initUIApp]
-    PAGES[Page objects]
-    FLOWS[Flows]
-    ACTIONS[HighlightedActions]
+  subgraph ui_layer ["Web automation"]
+    INIT["initUIApp"]
+    PAGES["Page objects"]
+    FLOWS["Flows"]
+    ACTIONS["HighlightedActions"]
   end
 
-  subgraph api [API automation]
-    CTX[APIRequestContext]
-    CLIENT[ApiClient]
-    SVC[Services]
-    EP[Endpoints]
+  subgraph api_layer ["API automation"]
+    CTX["APIRequestContext"]
+    CLIENT["ApiClient"]
+    SVC["Services"]
+    APIEP["Endpoints"]
   end
 
-  subgraph data [Test data]
-    CSV[CSV]
-    JSON[JSON]
-    SQL[MySQL]
-    XLS[Excel]
-    ENV[.env vars]
+  subgraph data_layer ["Test data"]
+    DATACSV["CSV"]
+    DATAJSON["JSON"]
+    DATAMYSQL["MySQL"]
+    DATAXLS["Excel"]
+    DATAENV["env vars"]
   end
 
-  CLI --> PW
-  NPM --> PW
-  UI --> PW
-  CI --> PW
-  PW --> LE
-  LE --> ES
-  LE --> EP
-  PW --> COMMON
+  CLI --> PWCFG
+  NPM --> PWCFG
+  PWUI --> PWCFG
+  CI --> PWCFG
+  PWCFG --> LOADENV
+  LOADENV --> ENVSTAGE
+  LOADENV --> ENVPROD
+  PWCFG --> COMMON
+  PWBASE --> COMMON
   COMMON --> UIFIX
   COMMON --> APIFIX
+  COMMON --> DATACSV
   UIFIX --> INIT --> PAGES --> FLOWS --> ACTIONS
-  APIFIX --> CTX --> CLIENT --> SVC --> EP
-  COMMON --> data
+  APIFIX --> CTX --> CLIENT --> SVC --> APIEP
 ```
 
 ---
@@ -216,24 +217,24 @@ Modeled after enterprise patterns (e.g. Allen web automation): one flag selects 
 
 ```mermaid
 flowchart LR
-  BASE[playwright test]
-  COMMON[commonTest]
-  UI[uiFixture test]
-  API[apiFixture test]
+  PWBASE["Playwright test"]
+  COMMON["commonTest"]
+  UIFIXT["uiFixture"]
+  APIFIXT["apiFixture"]
 
-  BASE --> COMMON
-  COMMON --> UI
-  COMMON --> API
+  PWBASE --> COMMON
+  COMMON --> UIFIXT
+  COMMON --> APIFIXT
 
-  COMMON --> TD[testData worker]
-  COMMON --> ENV[environment worker]
-  COMMON --> UIB[uiBaseUrl worker]
-  COMMON --> APIB[apiBaseUrl worker]
+  COMMON --> TD["testData worker"]
+  COMMON --> ENVFIX["environment worker"]
+  COMMON --> UIB["uiBaseUrl worker"]
+  COMMON --> APIB["apiBaseUrl worker"]
 
-  UI --> PAGE[page]
-  UI --> APP[adminApp]
+  UIFIXT --> PAGE["page"]
+  UIFIXT --> APP["adminApp"]
 
-  API --> AF[apiFactory]
+  APIFIXT --> AF["apiFactory"]
 ```
 
 ### 6.1 Common fixtures (worker scope)
@@ -344,24 +345,24 @@ pet.spec.ts
 
 ```mermaid
 flowchart TD
-  SRC[UI_TEST_DATA_SOURCE]
-  SRC --> CSV[CsvDataProvider]
-  SRC --> JSON[JsonDataProvider]
-  SRC --> SQL[SqlDataProvider]
-  SRC --> XLS[ExcelDataProvider]
-  SRC --> ENV[EnvDataProvider]
+  SRC["UI_TEST_DATA_SOURCE"]
+  SRC --> PCSV["CsvDataProvider"]
+  SRC --> PJSON["JsonDataProvider"]
+  SRC --> PMYSQL["SqlDataProvider"]
+  SRC --> PXLS["ExcelDataProvider"]
+  SRC --> PENV["EnvDataProvider"]
 
-  RESOLVE[resolveTestDataPath]
-  RESOLVE --> STAGE[test-data/stage/...]
-  RESOLVE --> PROD[test-data/prod/...]
-  RESOLVE --> FALLBACK[test-data/...]
+  RESOLVE["resolveTestDataPath"]
+  RESOLVE --> TSTAGE["test-data stage folder"]
+  RESOLVE --> TPROD["test-data prod folder"]
+  RESOLVE --> TFALL["test-data shared folder"]
 
-  CSV --> LOADER[TestDataLoader]
-  JSON --> LOADER
-  SQL --> LOADER
-  XLS --> LOADER
-  ENV --> LOADER
-  LOADER --> FIX[testData fixture]
+  PCSV --> LOADER["TestDataLoader"]
+  PJSON --> LOADER
+  PMYSQL --> LOADER
+  PXLS --> LOADER
+  PENV --> LOADER
+  LOADER --> FIX["testData fixture"]
 ```
 
 **Resolution rule:** Prefer `test-data/{stage|prod}/<path>`, else `test-data/<path>`.
@@ -447,5 +448,6 @@ HIGHLIGHT_ACTIONS=true npx playwright test tests/ui --headed --project=ui
 
 ---
 
-**Document version:** 1.0  
-**Last aligned with codebase:** March 2026
+**Document version:** 1.1  
+**Last aligned with codebase:** March 2026  
+**Note:** Mermaid diagrams use GitHub-safe node IDs (no `@`, `/`, or duplicate IDs).
